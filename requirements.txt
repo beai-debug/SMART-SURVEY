@@ -1,0 +1,27 @@
+# Core Data Processing
+pandas>=2.0
+numpy>=1.24
+
+# Visualization
+matplotlib>=3.8
+seaborn>=0.13
+plotly>=5.18
+
+# LangChain & LLM
+langchain>=0.2.0
+langchain-core>=0.2.0
+langchain-openai>=0.1.7
+langgraph>=0.1.20
+openai>=1.12.0
+
+# PostgreSQL & pgvector
+psycopg2-binary>=2.9
+pgvector>=0.4.0
+
+# Environment
+python-dotenv>=1.0
+
+# FastAPI & Server
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
