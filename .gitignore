@@ -205,3 +205,17 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Smart Survey Database Files
+# INCLUDE the main database dump for team setup (embeddings included)
+!smart_survey_dump.sql
+!smart_survey_backup.sql
+
+# Exclude temporary/local database files
+*_local.sql
+*_temp.sql
+*.dump
+
+# Smart Survey Output Files
+# Exclude generated charts and analysis outputs
+smart_outputs/
