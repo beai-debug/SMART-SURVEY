@@ -8,7 +8,9 @@ Endpoints:
 3. DELETE /delete/by-roll-school - Delete by Roll Number + School Name
 4. DELETE /delete/by-school - Delete by School Name
 5. DELETE /delete/by-class - Delete by Class (+ optional Subject Group)
-6. POST /search - Search with intent detection and similarity scores
+6. POST /search - Search with intent detection, similarity scores, and chart generation
+7. GET /chart/{filename} - Download generated chart files
+8. GET /charts - List all available charts
 """
 
 import os
@@ -16,10 +18,12 @@ import json
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from decimal import Decimal
+from urllib.parse import quote as url_quote
 
 from fastapi import FastAPI, HTTPException, Query, Body
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path
 from pydantic import BaseModel, Field
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -34,17 +38,23 @@ from survey_copilot import (
     run_semantic_search,
     run_mixed_analysis,
     generate_query_embedding,
+    generate_chart,
     get_connection as copilot_get_connection
 )
+
+# Output directory for charts
+CHART_OUTPUT_DIR = Path("smart_outputs")
+CHART_OUTPUT_DIR.mkdir(exist_ok=True)
 
 load_dotenv()
 
 # Database configuration
 DB_CONFIG = {
-    "database": "smart_survey",
-    "user": "postgres",
-    "host": "/var/run/postgresql",
-    "port": "5433"
+    "database": os.getenv("DB_NAME", "smart_survey"),
+    "user": os.getenv("DB_USER", "postgres"),
+    "password": os.getenv("DB_PASSWORD", ""),
+    "host": os.getenv("DB_HOST", "localhost"),
+    "port": os.getenv("DB_PORT", "5432")
 }
 
 # OpenAI for embeddings
@@ -655,6 +665,7 @@ async def search_query(request: SearchRequest):
     - final_response: Human-readable answer
     - Retrieved rows with similarity scores (for vector search)
     - Numbers in JSON format for graph generation
+    - chart_url: URL to download the generated chart (for QUANT and MIXED intents)
     """
     try:
         query = request.query
@@ -670,19 +681,35 @@ async def search_query(request: SearchRequest):
             if not result.get("success"):
                 raise HTTPException(status_code=500, detail=result.get("error", "Query execution failed"))
             
+            # Generate chart for quantitative results
+            chart_path = None
+            chart_url = None
+            results_data = result.get("results", [])
+            if results_data:
+                chart_path = generate_chart(results_data, query)
+                if chart_path:
+                    # Extract just the filename (without /chart/ prefix)
+                    chart_filename = Path(chart_path).name
+                    chart_url = chart_filename
+            
             return {
                 "status": "success",
                 "intent": intent,
                 "final_response": format_quant_response_api(result, query),
+                "chart_url": chart_url,
+                "chart_info": {
+                    "generated": chart_path is not None,
+                    "message": "Chart generated successfully. Use chart_url to download." if chart_url else "No chart generated (insufficient data)"
+                },
                 "retrieved_rows": {
                     "type": "aggregated",
-                    "data": result.get("results", []),
+                    "data": results_data,
                     "sample_size": result.get("sample_size", 0),
                     "similarity_scores": "N/A (quantitative query)"
                 },
                 "numbers_for_graph": {
                     "mixed": "N/A",
-                    "quant": result.get("results", [])
+                    "quant": results_data
                 },
                 "sql_query": result.get("sql", "")
             }
@@ -705,6 +732,11 @@ async def search_query(request: SearchRequest):
                 "status": "success",
                 "intent": intent,
                 "final_response": format_qual_response_api(result, query),
+                "chart_url": None,
+                "chart_info": {
+                    "generated": False,
+                    "message": "Charts are not generated for qualitative (QUAL) queries"
+                },
                 "retrieved_rows": {
                     "type": "vector_search",
                     "count": result.get("count", 0),
@@ -734,15 +766,30 @@ async def search_query(request: SearchRequest):
             # Get full rows with similarity scores
             full_rows = qual.get("full_rows", [])
             
+            # Generate chart for mixed results (using quantitative data)
+            chart_path = None
+            chart_url = None
+            quant_results = quant.get("results", [])
+            if quant_results:
+                chart_path = generate_chart(quant_results, query)
+                if chart_path:
+                    chart_filename = Path(chart_path).name
+                    chart_url = chart_filename
+            
             return {
                 "status": "success",
                 "intent": intent,
                 "final_response": format_mixed_response_api(result, query),
+                "chart_url": chart_url,
+                "chart_info": {
+                    "generated": chart_path is not None,
+                    "message": "Chart generated successfully. Use chart_url to download." if chart_url else "No chart generated (insufficient data)"
+                },
                 "retrieved_rows": {
                     "type": "mixed",
                     "quantitative": {
                         "sample_size": quant.get("sample_size", 0),
-                        "data": quant.get("results", [])
+                        "data": quant_results
                     },
                     "qualitative": {
                         "count": qual.get("feedback_count", 0),
@@ -759,10 +806,10 @@ async def search_query(request: SearchRequest):
                 },
                 "numbers_for_graph": {
                     "mixed": {
-                        "quantitative": quant.get("results", []),
+                        "quantitative": quant_results,
                         "qualitative_count": qual.get("feedback_count", 0)
                     },
-                    "quant": quant.get("results", [])
+                    "quant": quant_results
                 },
                 "sql_query": quant.get("sql", "")
             }
@@ -771,6 +818,70 @@ async def search_query(request: SearchRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENDPOINT 7: CHART DOWNLOAD - Serve generated chart files
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/chart/{filename}", tags=["Charts"])
+async def download_chart(filename: str):
+    """
+    Download a generated chart file
+    
+    Args:
+        filename: The chart filename (e.g., chart_satisfaction_20260314_141500.png)
+    
+    Returns:
+        The chart image file as a downloadable PNG
+    """
+    # Validate filename to prevent directory traversal
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    
+    # Construct full path
+    chart_path = CHART_OUTPUT_DIR / filename
+    
+    # Check if file exists
+    if not chart_path.exists():
+        raise HTTPException(status_code=404, detail=f"Chart not found: {filename}")
+    
+    # Return file as downloadable response
+    return FileResponse(
+        path=str(chart_path),
+        media_type="image/png",
+        filename=filename,
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}"
+        }
+    )
+
+
+@app.get("/charts", tags=["Charts"])
+async def list_charts():
+    """
+    List all available chart files
+    
+    Returns:
+        List of chart filenames with their creation timestamps
+    """
+    charts = []
+    for chart_file in CHART_OUTPUT_DIR.glob("*.png"):
+        stat = chart_file.stat()
+        charts.append({
+            "filename": chart_file.name,
+            "size_bytes": stat.st_size,
+            "created_at": datetime.fromtimestamp(stat.st_ctime).isoformat()
+        })
+    
+    # Sort by creation time (newest first)
+    charts.sort(key=lambda x: x["created_at"], reverse=True)
+    
+    return {
+        "status": "success",
+        "total_charts": len(charts),
+        "charts": charts
+    }
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Response Formatting Functions
@@ -862,7 +973,9 @@ async def root():
             "delete_by_roll_school": "/delete/by-roll-school",
             "delete_by_school": "/delete/by-school",
             "delete_by_class": "/delete/by-class",
-            "search": "/search"
+            "search": "/search (generates charts for QUANT/MIXED intents)",
+            "chart_download": "/chart/{filename}",
+            "chart_list": "/charts"
         },
         "docs": "/docs"
     }

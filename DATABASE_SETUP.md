@@ -12,25 +12,20 @@ The project uses **PostgreSQL** with the **pgvector** extension for semantic sea
 ## Where is the Data Stored?
 
 Your SQL data is stored in:
-- **Database Type:** PostgreSQL
+- **Database Type:** PostgreSQL 16
 - **Database Name:** `smart_survey`
-- **Location:** PostgreSQL server (typically at `/var/lib/postgresql/data` or Unix socket at `/var/run/postgresql`)
+- **Location:** PostgreSQL server (Unix socket at `/var/run/postgresql`)
 - **Table:** `survey` table with 36 columns including vector embeddings
 - **Backup File:** `smart_survey_dump.sql` (33MB) - includes all data and embeddings
 
-## Quick Setup (Recommended)
+---
 
-Use the pre-generated database dump to avoid re-running expensive embedding generation:
+## Quick Setup (Recommended for GitHub Codespaces)
 
-### Step 1: Install PostgreSQL with pgvector
+### Step 1: Activate Virtual Environment
 
 ```bash
-# Install PostgreSQL (if not already installed)
-sudo apt-get update
-sudo apt-get install postgresql postgresql-contrib
-
-# Install pgvector extension
-sudo apt-get install postgresql-15-pgvector
+source .venv/bin/activate
 ```
 
 ### Step 2: Start PostgreSQL
@@ -39,70 +34,135 @@ sudo apt-get install postgresql-15-pgvector
 sudo service postgresql start
 ```
 
-### Step 3: Create Database and Enable pgvector
+### Step 3: Install pgvector Extension
 
 ```bash
-# Connect to PostgreSQL
-sudo -u postgres psql
-
-# Create the database
-CREATE DATABASE smart_survey;
-
-# Connect to the database
-\c smart_survey
-
-# Enable pgvector extension
-CREATE EXTENSION IF NOT EXISTS vector;
-
-# Exit psql
-\q
+sudo apt-get update
+sudo apt-get install -y postgresql-16-pgvector
 ```
 
-### Step 4: Restore from Dump
+### Step 4: Create Database and Enable pgvector
+
+```bash
+# Create the database (uses sudo su - postgres to avoid password prompt)
+sudo su - postgres -c "psql -c 'CREATE DATABASE smart_survey;'"
+
+# Enable pgvector extension
+sudo su - postgres -c "psql -d smart_survey -c 'CREATE EXTENSION IF NOT EXISTS vector;'"
+
+# Set password for postgres user (to match .env configuration)
+sudo su - postgres -c "psql -c \"ALTER USER postgres WITH PASSWORD 'smartsurvey';\""
+```
+
+### Step 5: Configure pg_hba.conf for Password Authentication
+
+```bash
+# Add password authentication rules
+sudo bash -c "echo 'host    all             postgres        127.0.0.1/32            md5' >> /etc/postgresql/16/main/pg_hba.conf"
+sudo bash -c "echo 'host    all             postgres        ::1/128                 md5' >> /etc/postgresql/16/main/pg_hba.conf"
+
+# Reload PostgreSQL to apply changes
+sudo service postgresql reload
+```
+
+### Step 6: Verify Connection
+
+```bash
+# Test connection with password
+.venv/bin/python -c "
+import psycopg2
+conn = psycopg2.connect(host='localhost', database='smart_survey', user='postgres', password='smartsurvey')
+cur = conn.cursor()
+cur.execute('SELECT version();')
+print('PostgreSQL:', cur.fetchone()[0][:50])
+cur.execute(\"SELECT extname, extversion FROM pg_extension WHERE extname = 'vector';\")
+result = cur.fetchone()
+print(f'pgvector: {result[0]} v{result[1]}' if result else 'pgvector NOT found')
+conn.close()
+print('✅ Connection successful!')
+"
+```
+
+### Step 7: Restore from Dump (Optional - if dump file exists)
 
 ```bash
 # Restore the database from the dump file (includes all data + embeddings)
-psql -h /var/run/postgresql -p 5433 -U postgres -d smart_survey < smart_survey_dump.sql
+PGPASSWORD=smartsurvey psql -h localhost -U postgres -d smart_survey < smart_survey_dump.sql
 ```
 
-### Step 5: Verify Setup
+### Step 8: Or Load Fresh Data
 
 ```bash
-# Check if data was loaded
-psql -h /var/run/postgresql -p 5433 -U postgres -d smart_survey -c "SELECT COUNT(*) FROM survey;"
-
-# Should return: 1500 rows
+# Run the database setup script to create tables and load data
+.venv/bin/python db_setup.py
 ```
 
-### Step 6: Configure Environment
+---
+
+## One-Liner Setup Script
+
+For convenience, you can run all setup steps at once:
 
 ```bash
-# Copy the example environment file
+source .venv/bin/activate && \
+sudo service postgresql start && \
+sudo apt-get update && sudo apt-get install -y postgresql-16-pgvector && \
+sudo su - postgres -c "psql -c 'CREATE DATABASE smart_survey;'" 2>/dev/null || true && \
+sudo su - postgres -c "psql -d smart_survey -c 'CREATE EXTENSION IF NOT EXISTS vector;'" && \
+sudo su - postgres -c "psql -c \"ALTER USER postgres WITH PASSWORD 'smartsurvey';\"" && \
+sudo bash -c "echo 'host    all             postgres        127.0.0.1/32            md5' >> /etc/postgresql/16/main/pg_hba.conf" && \
+sudo bash -c "echo 'host    all             postgres        ::1/128                 md5' >> /etc/postgresql/16/main/pg_hba.conf" && \
+sudo service postgresql reload && \
+echo "✅ Database setup complete!"
+```
+
+---
+
+## Environment Configuration
+
+### Step 1: Copy Environment File
+
+```bash
 cp .env.example .env
-
-# Edit .env and add your API keys
-nano .env
 ```
 
-Add your actual API keys:
-```
+### Step 2: Edit .env File
+
+```bash
+# PostgreSQL Database Configuration
+DB_HOST=localhost
+DB_NAME=smart_survey
+DB_USER=postgres
+DB_PASSWORD=smartsurvey
+
+# OpenAI API Configuration
 OPENAI_API_KEY=sk-your-actual-openai-key-here
+MODEL_NAME=gpt-4o
+
+# Google API (optional)
 GOOGLE_API_KEY=your-actual-google-key-here
 ```
+
+---
 
 ## Alternative: Full Setup from Scratch
 
 If you want to regenerate everything from the CSV file:
 
 ```bash
+# Activate virtual environment
+source .venv/bin/activate
+
 # Install dependencies
 pip install -r requirements.txt
 
 # Run the database setup script (will regenerate embeddings - costs API credits!)
-python db_setup.py
+.venv/bin/python db_setup.py
 ```
 
 ⚠️ **Warning:** This will make ~1,500+ API calls to OpenAI for embedding generation and may cost $0.50-$1.00.
+
+---
 
 ## Database Schema
 
@@ -114,43 +174,62 @@ The `survey` table includes:
 - Open-ended feedback (teacher_feedback, school_feedback, school_suggestions)
 - **Vector embeddings** (teacher_feedback_embedding, school_feedback_embedding, school_suggestions_embedding)
 
+---
+
 ## Troubleshooting
 
+### Issue: "sudo: a password is required"
+**Solution:** Use `sudo su - postgres -c "command"` instead of `sudo -u postgres command`
+
 ### Issue: "relation does not exist"
-**Solution:** Make sure you've restored the dump file to the correct database.
+**Solution:** Make sure you've restored the dump file or run `db_setup.py`
 
 ### Issue: "extension vector does not exist"
-**Solution:** Install pgvector extension: `sudo apt-get install postgresql-15-pgvector`
+**Solution:** Install pgvector extension: `sudo apt-get install postgresql-16-pgvector`
 
 ### Issue: Connection refused
 **Solution:** Check if PostgreSQL is running: `sudo service postgresql status`
 
-### Issue: Port 5433 not available
-**Solution:** Check your PostgreSQL port in `/etc/postgresql/*/main/postgresql.conf`
+### Issue: "password authentication failed"
+**Solution:** 
+1. Set the password: `sudo su - postgres -c "psql -c \"ALTER USER postgres WITH PASSWORD 'smartsurvey';\""`
+2. Update pg_hba.conf and reload PostgreSQL
+
+### Issue: "Peer authentication failed"
+**Solution:** Add md5 authentication to pg_hba.conf and reload PostgreSQL
+
+---
 
 ## Testing the Setup
 
 Run the test scripts to verify everything works:
 
 ```bash
+# Activate virtual environment first
+source .venv/bin/activate
+
 # Test the survey copilot
-python test_survey_copilot.py
+.venv/bin/python test_survey_copilot.py
 
 # Test the API
-python test_api.py
+.venv/bin/python test_api.py
 ```
+
+---
 
 ## Notes
 
 - The database dump is included in the repository so you **don't need to regenerate embeddings**
 - Your `.env` file is gitignored to protect API keys
 - The `school_survey_1500.csv` file is also included as a backup data source
+- Always run Python scripts using `.venv/bin/python` to ensure correct environment
 - Temporary SQL files (*_local.sql, *_temp.sql) are ignored by git
 
 ## Need Help?
 
 If you encounter issues, check:
-1. PostgreSQL is running and accessible
-2. pgvector extension is properly installed
+1. PostgreSQL is running and accessible: `sudo service postgresql status`
+2. pgvector extension is properly installed: `dpkg -l | grep pgvector`
 3. Your `.env` file has correct API keys (copy from `.env.example`)
 4. The database was restored successfully from the dump file
+5. You're running commands inside the virtual environment: `source .venv/bin/activate`

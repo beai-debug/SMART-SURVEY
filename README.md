@@ -44,13 +44,13 @@ This system automatically:
 - PostgreSQL 16 with pgvector extension
 - OpenAI API key
 
-### go inside .venv
+### 1. Activate Virtual Environment
 
 ```bash
 source .venv/bin/activate   
 ```
 
-### 1. Clone and Install
+### 2. Clone and Install
 
 ```bash
 git clone https://github.com/Jatin2832003/SMART-SURVEY.git
@@ -58,7 +58,7 @@ cd SMART-SURVEY
 pip install -r requirements.txt
 ```
 
-### 2. Set Up Environment
+### 3. Set Up Environment
 
 ```bash
 cp .env.example .env
@@ -67,34 +67,42 @@ cp .env.example .env
 # MODEL_NAME=gpt-4o
 ```
 
-### 3. Set Up Database
+### 4. Set Up Database (GitHub Codespaces)
 
 ```bash
-# Start PostgreSQL and create database
-bash setup_db.sh
-
-# Or manually:
+# Start PostgreSQL
 sudo service postgresql start
-python db_setup.py
+
+# Install pgvector extension
+sudo apt-get update && sudo apt-get install -y postgresql-16-pgvector
+
+# Create database and enable pgvector (no password required)
+sudo su - postgres -c "psql -c 'CREATE DATABASE smart_survey;'"
+sudo su - postgres -c "psql -d smart_survey -c 'CREATE EXTENSION IF NOT EXISTS vector;'"
+
+# Set postgres password to match .env
+sudo su - postgres -c "psql -c \"ALTER USER postgres WITH PASSWORD 'smartsurvey';\""
+
+# Configure password authentication
+sudo bash -c "echo 'host    all             postgres        127.0.0.1/32            md5' >> /etc/postgresql/16/main/pg_hba.conf"
+sudo bash -c "echo 'host    all             postgres        ::1/128                 md5' >> /etc/postgresql/16/main/pg_hba.conf"
+sudo service postgresql reload
 ```
 
-### 4. Load Sample Data
+### 5. Load Data
 
 ```bash
-# Generate sample survey data (1500 rows with 25% detailed feedback)
-python generate_csv.py
+# Option A: Restore from dump (recommended - includes embeddings)
+PGPASSWORD=smartsurvey psql -h localhost -U postgres -d smart_survey < smart_survey_dump.sql
 
-# Load data into PostgreSQL
-python load_data.py
-
-# Generate embeddings for semantic search
-python generate_embeddings.py
+# Option B: Load fresh data and generate embeddings (costs API credits)
+.venv/bin/python db_setup.py
 ```
 
-### 5. Run the Copilot
+### 6. Run the Copilot
 
 ```bash
-python survey_copilot.py
+.venv/bin/python survey_copilot.py
 ```
 
 Example session:

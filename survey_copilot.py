@@ -26,12 +26,13 @@ class DecimalEncoder(json.JSONEncoder):
 
 load_dotenv()
 
-# Database configuration - use Unix socket with peer authentication
+# Database configuration - use environment variables
 DB_CONFIG = {
-    "database": "smart_survey",
-    "user": "postgres",
-    "host": "/var/run/postgresql",
-    "port": 5433
+    "database": os.getenv("DB_NAME", "smart_survey"),
+    "user": os.getenv("DB_USER", "postgres"),
+    "password": os.getenv("DB_PASSWORD", ""),
+    "host": os.getenv("DB_HOST", "localhost"),
+    "port": int(os.getenv("DB_PORT", "5432"))
 }
 
 # OpenAI client
@@ -204,8 +205,8 @@ def generate_chart(results: List[Dict], query: str, chart_type: str = "auto") ->
         
         plt.tight_layout()
         
-        # Save chart
-        safe_query = "".join(c if c.isalnum() or c in ' _-' else '_' for c in query[:30])
+        # Save chart - replace spaces with underscores for URL-safe filenames
+        safe_query = "".join(c if c.isalnum() or c in '_-' else '_' for c in query[:30])
         filename = f"chart_{safe_query}_{timestamp}.png"
         filepath = OUTPUT_DIR / filename
         
